@@ -7,6 +7,7 @@
 #include <atomic>
 #include <mutex>
 #include <vector>
+#include <string>
 #include <nvml.h>
 #include <cuda_runtime.h>
 
@@ -49,7 +50,6 @@ struct TimestampedMetrics
     unsigned int sm_clock;
     unsigned int mem_clock;
     double energy_joules;  // Changed to double for better precision
-    std::string event;     // Added for event tracking
 };
 
 void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, int scale, float percent)
@@ -115,9 +115,7 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
                 metrics.mem_clock = mem_clock;
                 
                 // Calculate energy in joules relative to the initial reading
-                metrics.energy_joules = (current_energy - initial_energy) / 1000.0; // convert from millijoules to joules
-                metrics.event = ""; // No event by default
-                
+                metrics.energy_joules = (current_energy - initial_energy) / 1000.0; // convert from millijoules to joules                
                 {
                     std::lock_guard<std::mutex> lock(metrics_mutex);
                     all_metrics.push_back(metrics);
@@ -161,27 +159,11 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
 
         checkCudaError(cudaMemcpy(d_x, h_x.data(), nsize * sizeof(float), cudaMemcpyHostToDevice), "Failed to copy data to device");
 
-        // Mark kernel start in metrics
-        {
-            auto current_time = std::chrono::high_resolution_clock::now();
-            auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                  current_time - app_start_time)
-                                  .count();
-            
-            // Add a marker for kernel start
-            TimestampedMetrics start_marker;
-            start_marker.timestamp_ms = elapsed_ms;
-            start_marker.power = 0;
-            start_marker.sm_utilization = 0;
-            start_marker.mem_utilization = 0;
-            start_marker.sm_clock = 0;
-            start_marker.mem_clock = 0;
-            start_marker.energy_joules = 0;
-            start_marker.event = "kernel_start_" + std::to_string(run);
-            
-            std::lock_guard<std::mutex> lock(metrics_mutex);
-            all_metrics.push_back(start_marker);
-        }
+        // Log kernel start time
+        auto kernel_start_time = std::chrono::high_resolution_clock::now();
+        auto kernel_start_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              kernel_start_time - app_start_time).count();
+        std::cout << "Kernel " << run + 1 << " starting at " << kernel_start_ms << " ms" << std::endl;
 
         // Create CUDA events for kernel timing
         cudaEvent_t kernel_start, kernel_stop;
@@ -208,27 +190,11 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
 
         checkCudaError(cudaDeviceSynchronize(), "Kernel execution failed");
 
-        // Mark kernel end in metrics
-        {
-            auto current_time = std::chrono::high_resolution_clock::now();
-            auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                  current_time - app_start_time)
-                                  .count();
-            
-            // Add a marker for kernel end
-            TimestampedMetrics end_marker;
-            end_marker.timestamp_ms = elapsed_ms;
-            end_marker.power = 0;
-            end_marker.sm_utilization = 0;
-            end_marker.mem_utilization = 0;
-            end_marker.sm_clock = 0;
-            end_marker.mem_clock = 0;
-            end_marker.energy_joules = 0;
-            end_marker.event = "kernel_end_" + std::to_string(run);
-            
-            std::lock_guard<std::mutex> lock(metrics_mutex);
-            all_metrics.push_back(end_marker);
-        }
+        // Log kernel end time
+        auto kernel_end_time = std::chrono::high_resolution_clock::now();
+        auto kernel_end_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              kernel_end_time - app_start_time).count();
+        std::cout << "Kernel " << run + 1 << " finished at " << kernel_end_ms << " ms" << std::endl;
 
         std::cout << "Run " << run + 1 << " - Kernel Latency: " << kernel_latency_ms << " ms" << std::endl;
 
@@ -238,14 +204,26 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
         // Wait before starting the next run
         if (run < num_runs - 1)
         {
+            // Log delay start time
+            auto delay_start_time = std::chrono::high_resolution_clock::now();
+            auto delay_start_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  delay_start_time - app_start_time).count();
+            std::cout << "Delay " << run + 1 << " starting at " << delay_start_ms << " ms" << std::endl;
+
             std::cout << "Waiting " << delay_between_runs << " ms before next run..." << std::endl;
             std::this_thread::sleep_for(std::chrono::milliseconds(delay_between_runs));
+            
+            // Log delay end time
+            auto delay_end_time = std::chrono::high_resolution_clock::now();
+            auto delay_end_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                delay_end_time - app_start_time).count();
+            std::cout << "Delay " << run + 1 << " finished at " << delay_end_ms << " ms" << std::endl;
         }
     }
 
-    // Continue monitoring for 3 seconds after the last kernel
-    std::cout << "Continuing monitoring for 3 more seconds..." << std::endl;
-    std::this_thread::sleep_for(std::chrono::seconds(3));
+    // Continue monitoring for few seconds after the last kernel
+    std::cout << "Continuing monitoring for few more seconds..." << std::endl;
+    std::this_thread::sleep_for(std::chrono::seconds(5));
 
     // Stop the monitoring thread
     monitoring_active.store(false);
