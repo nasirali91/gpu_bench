@@ -130,6 +130,11 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
         }
     });
 
+    // Create CUDA events for kernel timing
+    cudaEvent_t kernel_start, kernel_stop;
+    checkCudaError(cudaEventCreate(&kernel_start), "Failed to create start event");
+    checkCudaError(cudaEventCreate(&kernel_stop), "Failed to create stop event");
+
     for (int run = 0; run < num_runs; ++run)
     {
         std::cout << "Starting run " << run + 1 << " of " << num_runs << std::endl;
@@ -149,13 +154,6 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
 
         // Initialize d_x with random values
         std::vector<float> h_x(nsize);
-        std::default_random_engine generator;
-        std::uniform_real_distribution<float> distribution(-1.0f, 1.0f);
-
-        for (int i = 0; i < nsize; ++i)
-        {
-            h_x[i] = distribution(generator);
-        }
 
         checkCudaError(cudaMemcpy(d_x, h_x.data(), nsize * sizeof(float), cudaMemcpyHostToDevice), "Failed to copy data to device");
 
@@ -165,10 +163,7 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
                               kernel_start_time - app_start_time).count();
         std::cout << "Kernel " << run + 1 << " starting at " << kernel_start_ms << " ms" << std::endl;
 
-        // Create CUDA events for kernel timing
-        cudaEvent_t kernel_start, kernel_stop;
-        checkCudaError(cudaEventCreate(&kernel_start), "Failed to create start event");
-        checkCudaError(cudaEventCreate(&kernel_stop), "Failed to create stop event");
+        
 
         // Record start event
         checkCudaError(cudaEventRecord(kernel_start), "Failed to record start event");
@@ -184,9 +179,7 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
         // Calculate kernel latency
         float kernel_latency_ms;
         checkCudaError(cudaEventElapsedTime(&kernel_latency_ms, kernel_start, kernel_stop), "Failed to calculate elapsed time");
-        // Cleanup events
-        checkCudaError(cudaEventDestroy(kernel_start), "Failed to destroy start event");
-        checkCudaError(cudaEventDestroy(kernel_stop), "Failed to destroy stop event");
+    
 
         checkCudaError(cudaDeviceSynchronize(), "Kernel execution failed");
 
@@ -204,26 +197,32 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
         // Wait before starting the next run
         if (run < num_runs - 1)
         {
-            // Log delay start time
-            auto delay_start_time = std::chrono::high_resolution_clock::now();
-            auto delay_start_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                  delay_start_time - app_start_time).count();
-            std::cout << "Delay " << run + 1 << " starting at " << delay_start_ms << " ms" << std::endl;
+            // Calculate elapsed time since kernel end
+            auto after_cleanup_time = std::chrono::high_resolution_clock::now();
+            auto elapsed_since_kernel_end = std::chrono::duration_cast<std::chrono::milliseconds>(
+                after_cleanup_time - kernel_end_time).count();
 
-            std::cout << "Waiting " << delay_between_runs << " ms before next run..." << std::endl;
-            std::this_thread::sleep_for(std::chrono::milliseconds(delay_between_runs));
-            
-            // Log delay end time
-            auto delay_end_time = std::chrono::high_resolution_clock::now();
-            auto delay_end_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                delay_end_time - app_start_time).count();
-            std::cout << "Delay " << run + 1 << " finished at " << delay_end_ms << " ms" << std::endl;
+            // Calculate total time since kernel end
+            int sleep_time = delay_between_runs - static_cast<int>(elapsed_since_kernel_end);
+            if (sleep_time > 0)
+            {
+            //    std::cout << "Waiting " << sleep_time << " ms before next run..." << std::endl;
+                std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time));
+            }
+            else
+            {
+                std::cout << "No wait needed before next run (delay_between_runs already exceeded by " 
+                          << -sleep_time << " ms)." << std::endl;
+            }
         }
     }
+     // Cleanup events
+     checkCudaError(cudaEventDestroy(kernel_start), "Failed to destroy start event");
+     checkCudaError(cudaEventDestroy(kernel_stop), "Failed to destroy stop event");
 
-    // Continue monitoring for few seconds after the last kernel
-    std::cout << "Continuing monitoring for few more seconds..." << std::endl;
-    std::this_thread::sleep_for(std::chrono::seconds(5));
+    // Continue monitoring after the last kernel
+   // std::cout << "Continuing monitoring for few more seconds..." << std::endl;
+    std::this_thread::sleep_for(std::chrono::seconds(3));
 
     // Stop the monitoring thread
     monitoring_active.store(false);
@@ -252,8 +251,8 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
 
     csv_file.close();
     checkNvmlError(nvmlShutdown(), "Failed to shutdown NVML");
-    std::cout << "All " << num_runs << " runs completed successfully." << std::endl;
-    std::cout << "Metrics saved to metrics.csv" << std::endl;
+  //  std::cout << "All " << num_runs << " runs completed successfully." << std::endl;
+ //   std::cout << "Metrics saved to metrics.csv" << std::endl;
 }
 
 int main(int argc, const char **argv)
