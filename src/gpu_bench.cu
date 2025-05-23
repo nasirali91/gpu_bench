@@ -44,12 +44,13 @@ void checkNvmlError(nvmlReturn_t result, const char *msg)
 struct TimestampedMetrics
 {
     unsigned long long timestamp_ms; // Timestamp in milliseconds since start
-    unsigned int power;
-    unsigned int sm_utilization;
-    unsigned int mem_utilization;
-    unsigned int sm_clock;
-    unsigned int mem_clock;
-    double energy_joules;  // Changed to double for better precision
+    unsigned int power = 0;
+    unsigned int sm_utilization = 0;
+    unsigned int mem_utilization = 0;
+    unsigned int sm_clock = 0;
+    unsigned int mem_clock = 0;
+    double energy_joules = 0.0;
+    std::string event;
 };
 
 void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, int scale, float percent)
@@ -70,7 +71,6 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
     unsigned long long initial_energy = 0;
     try {
         checkNvmlError(nvmlDeviceGetTotalEnergyConsumption(device, &initial_energy), "Failed to get initial energy usage");
-        // std::cout << "Initial energy reading: " << initial_energy / 1000.0 << " J" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "Warning: Energy measurement not available: " << e.what() << std::endl;
     }
@@ -80,9 +80,7 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
     std::thread monitoring_thread([&]()
     {
         try {
-            // Use a fixed time point as the base for regular intervals
             auto next_sample_time = std::chrono::high_resolution_clock::now();
-            
             while (monitoring_active.load()) {
                 // Collect metrics
                 unsigned int power;
@@ -94,14 +92,12 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
                 checkNvmlError(nvmlDeviceGetUtilizationRates(device, &utilization), "Failed to get utilization rates");
                 checkNvmlError(nvmlDeviceGetClockInfo(device, NVML_CLOCK_SM, &sm_clock), "Failed to get SM clock");
                 checkNvmlError(nvmlDeviceGetClockInfo(device, NVML_CLOCK_MEM, &mem_clock), "Failed to get memory clock");
-                
                 try {
                     checkNvmlError(nvmlDeviceGetTotalEnergyConsumption(device, &current_energy), "Failed to get energy usage");
                 } catch (...) {
-                    // If energy measurement fails, just use 0
+                    current_energy = 0;
                 }
 
-                // Calculate elapsed time since start
                 auto current_time = std::chrono::high_resolution_clock::now();
                 auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                     current_time - app_start_time).count();
@@ -113,15 +109,14 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
                 metrics.mem_utilization = utilization.memory;
                 metrics.sm_clock = sm_clock;
                 metrics.mem_clock = mem_clock;
-                
-                // Calculate energy in joules relative to the initial reading
-                metrics.energy_joules = (current_energy - initial_energy) / 1000.0; // convert from millijoules to joules                
+                metrics.energy_joules = (current_energy - initial_energy) / 1000.0;
+                metrics.event = "";
+
                 {
                     std::lock_guard<std::mutex> lock(metrics_mutex);
                     all_metrics.push_back(metrics);
                 }
-                
-                // Calculate next sample time and sleep until then
+
                 next_sample_time += std::chrono::milliseconds(sampling_period);
                 std::this_thread::sleep_until(next_sample_time);
             }
@@ -135,10 +130,17 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
     checkCudaError(cudaEventCreate(&kernel_start), "Failed to create start event");
     checkCudaError(cudaEventCreate(&kernel_stop), "Failed to create stop event");
 
+    auto last_kernel_end_time = std::chrono::high_resolution_clock::now();
+
     for (int run = 0; run < num_runs; ++run)
     {
-        std::cout << "Starting run " << run + 1 << " of " << num_runs << std::endl;
 
+        std::cout << "Starting run " << run + 1 << " of " << num_runs << std::endl;
+        auto this_kernel_start_time = std::chrono::high_resolution_clock::now();
+        if (run > 0) {
+            auto delay_ms = std::chrono::duration<double, std::milli>(this_kernel_start_time - last_kernel_end_time).count();
+            std::cout << "Actual delay between run " << run << " and " << (run+1) << ": " << delay_ms << " ms" << std::endl;
+        }
         int nblocks, nthreads, nsize;
 
         cudaDeviceProp devProp;
@@ -152,24 +154,50 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
         float *d_x;
         checkCudaError(cudaMalloc(&d_x, nsize * sizeof(float)), "Failed to allocate device memory");
 
-        // Initialize d_x with random values
         std::vector<float> h_x(nsize);
 
         checkCudaError(cudaMemcpy(d_x, h_x.data(), nsize * sizeof(float), cudaMemcpyHostToDevice), "Failed to copy data to device");
 
-        // Log kernel start time
+        // Mark kernel start 
         auto kernel_start_time = std::chrono::high_resolution_clock::now();
         auto kernel_start_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                               kernel_start_time - app_start_time).count();
         std::cout << "Kernel " << run + 1 << " starting at " << kernel_start_ms << " ms" << std::endl;
 
-        
+        // --- Kernel start marker with NVML values ---
+        {
+            unsigned int power;
+            nvmlUtilization_t utilization;
+            unsigned int sm_clock, mem_clock;
+            unsigned long long current_energy = 0;
+
+            checkNvmlError(nvmlDeviceGetPowerUsage(device, &power), "Failed to get power usage");
+            checkNvmlError(nvmlDeviceGetUtilizationRates(device, &utilization), "Failed to get utilization rates");
+            checkNvmlError(nvmlDeviceGetClockInfo(device, NVML_CLOCK_SM, &sm_clock), "Failed to get SM clock");
+            checkNvmlError(nvmlDeviceGetClockInfo(device, NVML_CLOCK_MEM, &mem_clock), "Failed to get memory clock");
+            try {
+                checkNvmlError(nvmlDeviceGetTotalEnergyConsumption(device, &current_energy), "Failed to get energy usage");
+            } catch (...) {
+                current_energy = 0;
+            }
+
+            TimestampedMetrics start_marker;
+            start_marker.timestamp_ms = kernel_start_ms;
+            start_marker.power = power / 1000;
+            start_marker.sm_utilization = utilization.gpu;
+            start_marker.mem_utilization = utilization.memory;
+            start_marker.sm_clock = sm_clock;
+            start_marker.mem_clock = mem_clock;
+            start_marker.energy_joules = (current_energy - initial_energy) / 1000.0;
+            start_marker.event = "Kernel start";
+            all_metrics.push_back(start_marker);
+        }
 
         // Record start event
         checkCudaError(cudaEventRecord(kernel_start), "Failed to record start event");
 
         // Launch the kernel
-        unsigned int delay = 100;
+        unsigned int delay = 43900;
         kernel<<<nblocks, nthreads>>>(d_x, delay * scale);
 
         // Record stop event
@@ -179,7 +207,6 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
         // Calculate kernel latency
         float kernel_latency_ms;
         checkCudaError(cudaEventElapsedTime(&kernel_latency_ms, kernel_start, kernel_stop), "Failed to calculate elapsed time");
-    
 
         checkCudaError(cudaDeviceSynchronize(), "Kernel execution failed");
 
@@ -191,22 +218,48 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
 
         std::cout << "Run " << run + 1 << " - Kernel Latency: " << kernel_latency_ms << " ms" << std::endl;
 
-        // Make sure to free memory before the next iteration
+        // --- Kernel end marker with NVML values ---
+        {
+            unsigned int power;
+            nvmlUtilization_t utilization;
+            unsigned int sm_clock, mem_clock;
+            unsigned long long current_energy = 0;
+
+            checkNvmlError(nvmlDeviceGetPowerUsage(device, &power), "Failed to get power usage");
+            checkNvmlError(nvmlDeviceGetUtilizationRates(device, &utilization), "Failed to get utilization rates");
+            checkNvmlError(nvmlDeviceGetClockInfo(device, NVML_CLOCK_SM, &sm_clock), "Failed to get SM clock");
+            checkNvmlError(nvmlDeviceGetClockInfo(device, NVML_CLOCK_MEM, &mem_clock), "Failed to get memory clock");
+            try {
+                checkNvmlError(nvmlDeviceGetTotalEnergyConsumption(device, &current_energy), "Failed to get energy usage");
+            } catch (...) {
+                current_energy = 0;
+            }
+
+            TimestampedMetrics end_marker;
+            end_marker.timestamp_ms = kernel_end_ms;
+            end_marker.power = power / 1000;
+            end_marker.sm_utilization = utilization.gpu;
+            end_marker.mem_utilization = utilization.memory;
+            end_marker.sm_clock = sm_clock;
+            end_marker.mem_clock = mem_clock;
+            end_marker.energy_joules = (current_energy - initial_energy) / 1000.0;
+            end_marker.event = "Kernel end";
+            all_metrics.push_back(end_marker);
+        }
+
+        // Free memory before the next iteration
         checkCudaError(cudaFree(d_x), "Failed to free device memory");
 
         // Wait before starting the next run
         if (run < num_runs - 1)
         {
-            // Calculate elapsed time since kernel end
             auto after_cleanup_time = std::chrono::high_resolution_clock::now();
             auto elapsed_since_kernel_end = std::chrono::duration_cast<std::chrono::milliseconds>(
                 after_cleanup_time - kernel_end_time).count();
 
-            // Calculate total time since kernel end
             int sleep_time = delay_between_runs - static_cast<int>(elapsed_since_kernel_end);
             if (sleep_time > 0)
             {
-            //    std::cout << "Waiting " << sleep_time << " ms before next run..." << std::endl;
                 std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time));
             }
             else
@@ -216,12 +269,12 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
             }
         }
     }
-     // Cleanup events
-     checkCudaError(cudaEventDestroy(kernel_start), "Failed to destroy start event");
-     checkCudaError(cudaEventDestroy(kernel_stop), "Failed to destroy stop event");
+
+    // Cleanup events
+    checkCudaError(cudaEventDestroy(kernel_start), "Failed to destroy start event");
+    checkCudaError(cudaEventDestroy(kernel_stop), "Failed to destroy stop event");
 
     // Continue monitoring after the last kernel
-   // std::cout << "Continuing monitoring for few more seconds..." << std::endl;
     std::this_thread::sleep_for(std::chrono::seconds(3));
 
     // Stop the monitoring thread
@@ -233,7 +286,7 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
 
     // Write all metrics to CSV
     std::ofstream csv_file("metrics.csv");
-    csv_file << "Timestamp(ms),Power(W),SM Utilization(%),Memory Utilization(%),SM Clock(MHz),Memory Clock(MHz),Energy(J)\n";
+    csv_file << "Timestamp(ms),Power(W),SM Utilization(%),Memory Utilization(%),SM Clock(MHz),Memory Clock(MHz),Energy(J),Event\n";
 
     {
         std::lock_guard<std::mutex> lock(metrics_mutex);
@@ -245,14 +298,13 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
                      << metric.mem_utilization << ","
                      << metric.sm_clock << ","
                      << metric.mem_clock << ","
-                     << metric.energy_joules <<"\n";
+                     << metric.energy_joules << ","
+                     << metric.event << "\n";
         }
     }
 
     csv_file.close();
     checkNvmlError(nvmlShutdown(), "Failed to shutdown NVML");
-  //  std::cout << "All " << num_runs << " runs completed successfully." << std::endl;
- //   std::cout << "Metrics saved to metrics.csv" << std::endl;
 }
 
 int main(int argc, const char **argv)
