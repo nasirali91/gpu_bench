@@ -2,7 +2,7 @@
 
 # Compiler and flags
 NVCC = nvcc
-NVCC_FLAGS = -gencode arch=compute_80,code=sm_80
+NVCC_FLAGS =  -gencode arch=compute_70,code=sm_70 -gencode arch=compute_75,code=sm_75 -gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_89,code=sm_89 -gencode arch=compute_90,code=sm_90 -gencode arch=compute_90,code=compute_90
 CUDA_PATH ?= /usr/local/cuda
 NVML_PATH ?= $(CUDA_PATH)
 
