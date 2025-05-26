@@ -73,7 +73,8 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
     nvmlDevice_t device;
     checkNvmlError(nvmlInit(), "Failed to initialize NVML");
     checkNvmlError(nvmlDeviceGetHandleByIndex(0, &device), "Failed to get NVML device handle");
-
+    // 
+    std::atomic<int> sampling_period_atomic(sampling_period);
     auto app_start_time = std::chrono::high_resolution_clock::now();
     std::vector<TimestampedMetrics> all_metrics;
     std::mutex metrics_mutex;
@@ -116,8 +117,12 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
                 all_metrics.push_back(metrics);
             }
 
-            next_sample_time += std::chrono::milliseconds(sampling_period);
+            int current_period = sampling_period_atomic.load();
+            next_sample_time += std::chrono::milliseconds(current_period);
             std::this_thread::sleep_until(next_sample_time);
+
+          //  next_sample_time += std::chrono::milliseconds(sampling_period);
+         //   std::this_thread::sleep_until(next_sample_time);
         }
     });
 
@@ -186,6 +191,9 @@ void measure_metrics(int sampling_period, int num_runs, int delay_between_runs, 
     checkCudaError(cudaEventDestroy(kernel_start), "Failed to destroy start event");
     checkCudaError(cudaEventDestroy(kernel_stop), "Failed to destroy stop event");
 
+    //std::this_thread::sleep_for(std::chrono::seconds(3));
+
+    sampling_period_atomic = 150; // e.g., 150 ms (0.15 second) 
     std::this_thread::sleep_for(std::chrono::seconds(3));
     monitoring_active.store(false);
     if (monitoring_thread.joinable())
