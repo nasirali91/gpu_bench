@@ -89,17 +89,13 @@ The tool produces two types of output:
 
 ## Data Analysis
 
-You can analyze the collected data using the included Python script:
-
-```bash
-python plot_power.py
-```
+You can analyze the collected data using the included Jupyter nootbook `plot.ipynb`
 
 This will generate a plot of power consumption over time, with statistics about average, minimum, and maximum power usage.
 
 ## Example Visualization
 
-![Power Consumption Example](docs/power_vs_time.png)
+![Power Consumption Example](power_vs_time.png)
 
 ## Advanced Usage
 
@@ -135,6 +131,7 @@ make custom_run ARGS="1 5 500 2 50"
 ├── src/              # Source code
 │   └── *.cu          # CUDA source files
 ├── Makefile          # Build configuration
+├── plot.ipynb        # Notebook to plot power vs elapsed time
 └── README.md         # This file
 ```
 
